@@ -245,6 +245,14 @@ app.get('/api/check-payments/:user', async (req, res) => {
   res.json({ balance: u.balance, purchases: u.purchases, pendingCount: pending.length, pendingOrders: pending.map(o => o.id) });
 });
 
+// --- Admin: GET all users/accounts ---
+app.get('/api/usuarios', (req, res) => {
+  const list = Array.from(users.entries()).map(function (entry) {
+    return { username: entry[0], balance: entry[1].balance || 0, purchases: entry[1].purchases || [] };
+  });
+  res.json({ users: list, total: list.length });
+});
+
 app.listen(PORT, () => {
   console.log('Backend running on port ' + PORT);
 });
