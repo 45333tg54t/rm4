@@ -125,7 +125,7 @@ app.post('/api/login', (req, res) => {
 // --- Email codes (Brevo) for verification & password reset ---
 const emailCodes = new Map(); // key: purpose:email -> { code, expires }
 
-async function sendEmail(to, subject, text) {
+async function sendEmail(to, subject, text, html) {
   // Try Resend (if API key is available)
   if (RESEND_API_KEY) {
     try {
@@ -136,7 +136,8 @@ async function sendEmail(to, subject, text) {
           from: 'RM4market <onboarding@resend.dev>',
           to: [to],
           subject: subject,
-          text: text
+          text: text,
+          html: html || text
         })
       });
       const d = await r.json().catch(() => ({}));
@@ -159,7 +160,8 @@ async function sendEmail(to, subject, text) {
           sender: { email: BREVO_SENDER_EMAIL, name: BREVO_SENDER_NAME },
           to: [{ email: to }],
           subject: subject,
-          textContent: text
+          textContent: text,
+          htmlContent: html || text
         })
       });
       const d = await r.json().catch(() => ({}));
@@ -186,8 +188,16 @@ app.post('/api/request-code', async (req, res) => {
   const text = p === 'reset'
     ? 'Hola,\n\nTu codigo para restablecer tu contrasena es: ' + code + '\n\nValido por 10 minutos. Si no solicitaste esto, ignora este correo.'
     : 'Hola,\n\nTu codigo de verificacion de correo es: ' + code + '\n\nValido por 10 minutos. Confirma que este correo es tuyo.';
+  const html = '<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;background:#0d1117;color:#e5e7eb;border-radius:12px;">' +
+    '<h2 style="color:#38bdf8;margin:0 0 16px;">RM4market</h2>' +
+    '<p style="margin:0 0 12px;">' + (p === 'reset' ? 'Hola, recibimos una solicitud para restablecer tu contrasena.' : 'Hola, gracias por registrarte en RM4market.') + '</p>' +
+    '<p style="margin:0 0 8px;">Tu codigo de verificacion es:</p>' +
+    '<div style="font-size:32px;font-weight:bold;letter-spacing:8px;text-align:center;padding:16px;background:#1a1d29;border-radius:8px;margin:12px 0;color:#38bdf8;">' + code + '</div>' +
+    '<p style="margin:0 0 8px;font-size:12px;color:#9ca3af;">Valido por 10 minutos.</p>' +
+    '<p style="margin:16px 0 0;font-size:12px;color:#9ca3af;">Si no solicitaste esto, ignora este correo.</p>' +
+    '</div>';
   // Send email in background (don't block the response)
-  sendEmail(email, subject, text).then(function (r) {
+  sendEmail(email, subject, text, html).then(function (r) {
     console.log('Email send result:', r.ok, r.reason || 'sent', r.messageId);
   }).catch(function (e) {
     console.log('Email send error:', e.message);
