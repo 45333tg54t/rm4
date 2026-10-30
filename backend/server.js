@@ -15,6 +15,7 @@ app.use(cors({
 }));
 
 const PORT = process.env.PORT || 3000;
+// v2 - MongoDB IP whitelist enabled
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY || '';
 const BLOCKCYPHER_TOKEN = process.env.BLOCKCYPHER_TOKEN || '';
 const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
