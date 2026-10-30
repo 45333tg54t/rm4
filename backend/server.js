@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
 const { MongoClient } = require('mongodb');
+let nodemailer = null;
+try { nodemailer = require('nodemailer'); } catch (e) { nodemailer = null; }
 
 const app = express();
 app.use(express.json());
@@ -21,10 +23,13 @@ const BLOCKCYPHER_TOKEN = process.env.BLOCKCYPHER_TOKEN || '';
 const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
 const ADMIN_KEY = process.env.ADMIN_KEY || 'rm4admin2026';
 const MONGODB_URI = process.env.MONGODB_URI || '';
+// nodemailer already loaded above
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
 const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'ntmb972@gmail.com';
 const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || 'RM4market';
+const GMAIL_USER = process.env.GMAIL_USER || '';
+const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 const REQUIRE_EMAIL_VERIFICATION = process.env.REQUIRE_EMAIL_VERIFICATION === 'true';
 
 const WALLETS = {
@@ -126,25 +131,71 @@ app.post('/api/login', (req, res) => {
 const emailCodes = new Map(); // key: purpose:email -> { code, expires }
 
 async function sendEmail(to, subject, text) {
-  if (!BREVO_API_KEY) return { ok: false, status: 0, reason: 'Falta BREVO_API_KEY' };
-  try {
-    const r = await fetch('https://api.brevo.com/v3/smtp/email', {
-      method: 'POST',
-      headers: { 'accept': 'application/json', 'api-key': BREVO_API_KEY, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sender: { email: BREVO_SENDER_EMAIL, name: BREVO_SENDER_NAME },
-        to: [{ email: to }],
+  // Try Gmail SMTP first (if configured) — most reliable for Gmail delivery
+  if (GMAIL_USER && GMAIL_APP_PASSWORD) {
+    try {
+      const nodemailer = require('nodemailer');
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD }
+      });
+      const info = await transporter.sendMail({
+        from: GMAIL_USER,
+        to: to,
         subject: subject,
-        textContent: text
-      })
-    });
-    const d = await r.json().catch(() => ({}));
-    console.log('Brevo response:', r.status, JSON.stringify(d));
-    return { ok: r.status === 200 || r.status === 201, status: r.status, reason: d.message || d.code || '', messageId: d.messageId || '' };
-  } catch (e) {
-    console.log('Brevo error:', e.message);
-    return { ok: false, status: 0, reason: e.message };
+        text: text
+      });
+      console.log('Gmail SMTP sent:', info.messageId);
+      return { ok: true, status: 200, reason: '', messageId: info.messageId || '' };
+    } catch (e) {
+      console.log('Gmail SMTP error:', e.message);
+    }
   }
+  // Try Resend (if API key is available)
+  if (RESEND_API_KEY) {
+    try {
+      const r = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + RESEND_API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: 'RM4market <onboarding@resend.dev>',
+          to: [to],
+          subject: subject,
+          text: text
+        })
+      });
+      const d = await r.json().catch(() => ({}));
+      console.log('Resend response:', r.status, JSON.stringify(d));
+      if (r.status === 200 || r.status === 201) {
+        return { ok: true, status: r.status, reason: '', messageId: d.id || '' };
+      }
+      return { ok: false, status: r.status, reason: d.message || '', messageId: '' };
+    } catch (e) {
+      console.log('Resend error:', e.message);
+    }
+  }
+  // Fall back to Brevo
+  if (BREVO_API_KEY) {
+    try {
+      const r = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: { 'accept': 'application/json', 'api-key': BREVO_API_KEY, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sender: { email: BREVO_SENDER_EMAIL, name: BREVO_SENDER_NAME },
+          to: [{ email: to }],
+          subject: subject,
+          textContent: text
+        })
+      });
+      const d = await r.json().catch(() => ({}));
+      console.log('Brevo response:', r.status, JSON.stringify(d));
+      return { ok: r.status === 200 || r.status === 201, status: r.status, reason: d.message || d.code || '', messageId: d.messageId || '' };
+    } catch (e) {
+      console.log('Brevo error:', e.message);
+      return { ok: false, status: 0, reason: e.message, messageId: '' };
+    }
+  }
+  return { ok: false, status: 0, reason: 'No email service configured', messageId: '' };
 }
 
 function genCode() { return String(Math.floor(100000 + Math.random() * 900000)); }
