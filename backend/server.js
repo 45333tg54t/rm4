@@ -523,6 +523,29 @@ app.get('/api/check-payments/:user', async (req, res) => {
 });
 
 // --- Health / diagnostics ---
+app.get('/api/test-email', async (req, res) => {
+  const to = req.query.to || 'ntmb972@gmail.com';
+  const subject = 'Test RM4market';
+  const text = 'This is a test email from RM4market.';
+  const results = {};
+  // Check nodemailer
+  let nm = null;
+  try { nm = require('nodemailer'); results.nodemailerLoaded = true; } catch (e) { results.nodemailerLoaded = false; results.nodemailerError = e.message; }
+  // Try Gmail SMTP
+  if (GMAIL_USER && GMAIL_APP_PASSWORD && nm) {
+    try {
+      const transporter = nm.createTransport({ service: 'gmail', auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD }, connectionTimeout: 10000 });
+      const info = await transporter.sendMail({ from: GMAIL_USER, to: to, subject: subject, text: text });
+      results.gmail = { ok: true, messageId: info.messageId };
+    } catch (e) {
+      results.gmail = { ok: false, error: e.message };
+    }
+  } else {
+    results.gmail = { ok: false, error: 'GMAIL_USER or GMAIL_APP_PASSWORD not set, or nodemailer not loaded' };
+  }
+  res.json(results);
+});
+
 app.get('/api/health', (req, res) => {
   res.json({
     mongo: !!db,
