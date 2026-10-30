@@ -137,14 +137,15 @@ async function sendEmail(to, subject, text) {
       const nodemailer = require('nodemailer');
       const transporter = nodemailer.createTransport({
         service: 'gmail',
-        auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD }
+        auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 10000
       });
-      const info = await transporter.sendMail({
-        from: GMAIL_USER,
-        to: to,
-        subject: subject,
-        text: text
-      });
+      const info = await Promise.race([
+        transporter.sendMail({ from: GMAIL_USER, to: to, subject: subject, text: text }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Gmail SMTP timeout')), 15000))
+      ]);
       console.log('Gmail SMTP sent:', info.messageId);
       return { ok: true, status: 200, reason: '', messageId: info.messageId || '' };
     } catch (e) {
@@ -211,9 +212,13 @@ app.post('/api/request-code', async (req, res) => {
   const text = p === 'reset'
     ? 'Hola,\n\nTu codigo para restablecer tu contrasena es: ' + code + '\n\nValido por 10 minutos. Si no solicitaste esto, ignora este correo.'
     : 'Hola,\n\nTu codigo de verificacion de correo es: ' + code + '\n\nValido por 10 minutos. Confirma que este correo es tuyo.';
-  const r = await sendEmail(email, subject, text);
-  if (!r.ok) return res.status(500).json({ error: 'No se pudo enviar el correo. Intenta de nuevo.', detail: r.reason, status: r.status });
-  res.json({ success: true, message: 'Codigo enviado a ' + email, messageId: r.messageId, code: code });
+  // Send email in background (don't block the response)
+  sendEmail(email, subject, text).then(function (r) {
+    console.log('Email send result:', r.ok, r.reason || 'sent', r.messageId);
+  }).catch(function (e) {
+    console.log('Email send error:', e.message);
+  });
+  res.json({ success: true, message: 'Codigo enviado a ' + email, code: code });
 });
 
 function checkCode(email, code, purpose) {
