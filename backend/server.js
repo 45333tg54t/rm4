@@ -389,6 +389,18 @@ app.get('/api/check-payments/:user', async (req, res) => {
   res.json({ balance: u.balance, purchases: u.purchases, pendingCount: pending.length, pendingOrders: pending.map(o => o.id) });
 });
 
+// --- Health / diagnostics ---
+app.get('/api/health', (req, res) => {
+  res.json({
+    mongo: !!db,
+    mongodbUriSet: !!MONGODB_URI,
+    users: users.size,
+    orders: orders.size,
+    payments: payments.length,
+    uptime: process.uptime()
+  });
+});
+
 // --- Connect to MongoDB (optional) ---
 async function connectDB() {
   if (!MONGODB_URI) {
