@@ -21,6 +21,10 @@ const BLOCKCYPHER_TOKEN = process.env.BLOCKCYPHER_TOKEN || '';
 const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
 const ADMIN_KEY = process.env.ADMIN_KEY || 'rm4admin2026';
 const MONGODB_URI = process.env.MONGODB_URI || '';
+const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
+const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'no-reply@rm4market.com';
+const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || 'RM4market';
+const REQUIRE_EMAIL_VERIFICATION = process.env.REQUIRE_EMAIL_VERIFICATION === 'true';
 
 const WALLETS = {
   BTC: 'bc1pga0nwgy57jj92f0686qjuvtr0ug7lte4fsxwkja5678qcyx4tm5qlxeek4',
@@ -88,10 +92,15 @@ function genId() { return crypto.randomBytes(4).toString('hex').toUpperCase(); }
 
 // --- Register ---
 app.post('/api/register', async (req, res) => {
-  const { username, email, password } = req.body;
+  const { username, email, password, emailCode } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Username y password requeridos' });
   if (username.length < 5) return res.status(400).json({ error: 'Username mínimo 5 caracteres' });
   if (password.length < 5) return res.status(400).json({ error: 'Password mínimo 5 caracteres' });
+  if (REQUIRE_EMAIL_VERIFICATION) {
+    if (!validEmail(email)) return res.status(400).json({ error: 'Debes usar un correo válido y existente' });
+    const vc = checkCode(email, emailCode, 'register');
+    if (!vc.ok) return res.status(400).json({ error: vc.reason });
+  }
   if (users.has(username)) return res.status(400).json({ error: 'El usuario ya existe' });
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
@@ -110,6 +119,95 @@ app.post('/api/login', (req, res) => {
   if (!crypto.timingSafeEqual(Buffer.from(h, 'hex'), Buffer.from(u.passwordHash, 'hex'))) return res.status(401).json({ error: 'Contraseña incorrecta' });
   const token = crypto.randomBytes(32).toString('hex');
   res.json({ success: true, token, username: u.username, email: u.email, balance: u.balance });
+});
+
+// --- Email codes (Brevo) for verification & password reset ---
+const emailCodes = new Map(); // key: purpose:email -> { code, expires }
+
+async function sendBrevoEmail(to, subject, text) {
+  if (!BREVO_API_KEY) return { ok: false, status: 0, reason: 'Falta BREVO_API_KEY' };
+  try {
+    const r = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: { 'accept': 'application/json', 'api-key': BREVO_API_KEY, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sender: { email: BREVO_SENDER_EMAIL, name: BREVO_SENDER_NAME },
+        to: [{ email: to }],
+        subject: subject,
+        textContent: text
+      })
+    });
+    const d = await r.json().catch(() => ({}));
+    return { ok: r.status === 200 || r.status === 201, status: r.status, reason: d.message || d.code || '' };
+  } catch (e) {
+    return { ok: false, status: 0, reason: e.message };
+  }
+}
+
+function genCode() { return String(Math.floor(100000 + Math.random() * 900000)); }
+function validEmail(e) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(e || '')); }
+
+app.post('/api/request-code', async (req, res) => {
+  const { email, purpose } = req.body;
+  if (!validEmail(email)) return res.status(400).json({ error: 'Correo inválido' });
+  const p = purpose === 'reset' ? 'reset' : 'register';
+  const code = genCode();
+  emailCodes.set(p + ':' + String(email).toLowerCase(), { code, expires: Date.now() + 10 * 60 * 1000 });
+  const subject = p === 'reset' ? 'RM4market — Código para restablecer tu contraseña' : 'RM4market — Código de verificación';
+  const text = p === 'reset'
+    ? 'Hola,\n\nTu código para restablecer tu contraseña es: ' + code + '\n\nVálido por 10 minutos. Si no solicitaste esto, ignora este correo.'
+    : 'Hola,\n\nTu código de verificación de correo es: ' + code + '\n\nVálido por 10 minutos. Confirma que este correo es tuyo.';
+  const r = await sendBrevoEmail(email, subject, text);
+  if (!r.ok) return res.status(500).json({ error: 'No se pudo enviar el correo. Intenta de nuevo.' });
+  res.json({ success: true, message: 'Código enviado a ' + email });
+});
+
+function checkCode(email, code, purpose) {
+  const key = purpose + ':' + String(email || '').toLowerCase();
+  const rec = emailCodes.get(key);
+  if (!rec) return { ok: false, reason: 'No se solicitó código. Solicita uno nuevo.' };
+  if (Date.now() > rec.expires) { emailCodes.delete(key); return { ok: false, reason: 'El código expiró. Solicita uno nuevo.' }; }
+  if (rec.code !== String(code)) return { ok: false, reason: 'El código no coincide.' };
+  return { ok: true };
+}
+
+app.post('/api/verify-code', (req, res) => {
+  const { email, code, purpose } = req.body;
+  const p = purpose === 'reset' ? 'reset' : 'register';
+  const r = checkCode(email, code, p);
+  if (!r.ok) return res.status(400).json({ error: r.reason });
+  res.json({ success: true });
+});
+
+app.post('/api/reset-password', async (req, res) => {
+  const { email, code, newPassword } = req.body;
+  if (!newPassword || newPassword.length < 5) return res.status(400).json({ error: 'La nueva contraseña debe tener al menos 5 caracteres' });
+  const r = checkCode(email, code, 'reset');
+  if (!r.ok) return res.status(400).json({ error: r.reason });
+  const needle = String(email).toLowerCase();
+  let key = null;
+  for (const [k, u] of users) { if (u.email && String(u.email).toLowerCase() === needle) { key = k; break; } }
+  if (!key) return res.status(404).json({ error: 'No existe ninguna cuenta con ese correo' });
+  const u = users.get(key);
+  const salt = crypto.randomBytes(16).toString('hex');
+  u.salt = salt;
+  u.passwordHash = crypto.scryptSync(newPassword, salt, 64).toString('hex');
+  users.set(key, u);
+  await saveUser(u);
+  res.json({ success: true, username: key, message: 'Contraseña actualizada' });
+});
+
+// Admin: restore accounts locally recovered (bypass email verification)
+app.post('/api/admin/restore-user', async (req, res) => {
+  if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ error: 'No autorizado' });
+  const { username, email, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: 'Faltan datos' });
+  if (users.has(username)) return res.json({ success: true, skipped: true, username });
+  const salt = crypto.randomBytes(16).toString('hex');
+  const u = { username, email: email || '', passwordHash: crypto.scryptSync(password, salt, 64).toString('hex'), salt, balance: 0, purchases: [], createdAt: new Date().toISOString() };
+  users.set(username, u);
+  await saveUser(u);
+  res.json({ success: true, username });
 });
 
 // --- Create order ---
@@ -345,32 +443,6 @@ app.post('/api/admin/reset-balances', (req, res) => {
   res.json({ success: true, message: 'Saldos reseteados a 0', affected: count });
 });
 
-// --- Register ---
-app.post('/api/register', (req, res) => {
-  const { username, email, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: 'Username y password requeridos' });
-  if (username.length < 5) return res.status(400).json({ error: 'Username mínimo 5 caracteres' });
-  if (password.length < 5) return res.status(400).json({ error: 'Password mínimo 5 caracteres' });
-  if (users.has(username)) return res.status(400).json({ error: 'El usuario ya existe' });
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
-  const u = { username, email: email || '', passwordHash: hash, salt, balance: 0, purchases: [], createdAt: new Date().toISOString() };
-  users.set(username, u);
-  saveUser(u);
-  res.json({ success: true, username, balance: 0 });
-});
-
-// --- Login ---
-app.post('/api/login', (req, res) => {
-  const { username, password } = req.body;
-  const u = users.get(username);
-  if (!u) return res.status(401).json({ error: 'Usuario no encontrado' });
-  const h = crypto.scryptSync(password, u.salt, 64).toString('hex');
-  if (!crypto.timingSafeEqual(Buffer.from(h, 'hex'), Buffer.from(u.passwordHash, 'hex'))) return res.status(401).json({ error: 'Contraseña incorrecta' });
-  const token = crypto.randomBytes(32).toString('hex');
-  res.json({ success: true, token, username: u.username, email: u.email, balance: u.balance });
-});
-
 // --- Get balance ---
 app.get('/api/balance/:user', (req, res) => {
   const u = users.get(req.params.user) || { balance: 0 };
@@ -404,30 +476,43 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// --- Connect to MongoDB (optional) ---
+// --- Connect to MongoDB (with automatic retry) ---
 async function connectDB() {
   if (!MONGODB_URI) {
     console.log('No MONGODB_URI set, using in-memory storage');
     return;
   }
+  let attempt = 0;
+  while (!db) {
+    attempt++;
+    try {
+      const client = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: 10000 });
+      await client.connect();
+      db = client.db('rm4market');
+      console.log('Connected to MongoDB (attempt ' + attempt + ')');
+      mongoError = '';
+      // Load persisted data, then merge anything registered while offline
+      await loadFromDB();
+      await syncInMemoryToDB();
+      break;
+    } catch (e) {
+      mongoError = e.message;
+      console.error('MongoDB connection attempt ' + attempt + ' failed: ' + e.message);
+      await new Promise(function (r) { setTimeout(r, 10000); });
+    }
+  }
+}
+
+// After a late connect, persist users/orders created while DB was offline
+async function syncInMemoryToDB() {
+  if (!db) return;
   try {
-    const client = new MongoClient(MONGODB_URI);
-    await client.connect();
-    db = client.db('rm4market');
-    console.log('Connected to MongoDB');
-    // Load data from MongoDB
-    const usersArr = await db.collection('users').find({}).toArray();
-    usersArr.forEach(u => users.set(u.username, u));
-    const ordersArr = await db.collection('orders').find({}).toArray();
-    ordersArr.forEach(o => orders.set(o.id, o));
-    const paymentsArr = await db.collection('payments').find({}).toArray();
-    paymentsArr.forEach(p => payments.push(p));
-    const txidsArr = await db.collection('txids').find({}).toArray();
-    txidsArr.forEach(t => processedTxids.add(t.txid));
-    console.log('Loaded: ' + users.size + ' users, ' + orders.size + ' orders, ' + payments.length + ' payments');
+    for (const u of users.values()) await saveUser(u);
+    for (const o of orders.values()) await saveOrder(o);
+    for (const t of processedTxids) await saveTxid(t);
+    console.log('Synced in-memory data to DB: ' + users.size + ' users, ' + orders.size + ' orders');
   } catch (e) {
-    console.error('MongoDB connection error:', e.message);
-    mongoError = e.message;
+    console.error('DB sync error:', e.message);
   }
 }
 
@@ -437,11 +522,11 @@ async function saveOrder(o) { if (db) await db.collection('orders').updateOne({ 
 async function savePayment(p) { if (db) await db.collection('payments').insertOne(p); }
 async function saveTxid(t) { if (db) await db.collection('txids').updateOne({ txid: t }, { $set: { txid: t } }, { upsert: true }); }
 
-connectDB().then(() => {
-  app.listen(PORT, () => {
-    console.log('Backend running on port ' + PORT);
-    setTimeout(checkPendingOrders, 5000);
-    setInterval(checkPendingOrders, 30000);
-  });
+app.listen(PORT, () => {
+  console.log('Backend running on port ' + PORT);
+  setTimeout(checkPendingOrders, 5000);
+  setInterval(checkPendingOrders, 30000);
+  // Connect in background so the server is never blocked by Atlas cold starts
+  connectDB();
 });
 module.exports = app;
