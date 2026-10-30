@@ -93,15 +93,10 @@ function genId() { return crypto.randomBytes(4).toString('hex').toUpperCase(); }
 
 // --- Register ---
 app.post('/api/register', async (req, res) => {
-  const { username, email, password, emailCode } = req.body;
+  const { username, email, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Username y password requeridos' });
   if (username.length < 5) return res.status(400).json({ error: 'Username mínimo 5 caracteres' });
   if (password.length < 5) return res.status(400).json({ error: 'Password mínimo 5 caracteres' });
-  if (REQUIRE_EMAIL_VERIFICATION) {
-    if (!validEmail(email)) return res.status(400).json({ error: 'Debes usar un correo válido y existente' });
-    const vc = checkCode(email, emailCode, 'register');
-    if (!vc.ok) return res.status(400).json({ error: vc.reason });
-  }
   if (users.has(username)) return res.status(400).json({ error: 'El usuario ya existe' });
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
