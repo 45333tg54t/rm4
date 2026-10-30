@@ -45,6 +45,7 @@ const COINS = {
 };
 
 let db = null;
+let mongoError = '';
 const orders = new Map();
 const users = new Map();
 const payments = [];
@@ -394,6 +395,7 @@ app.get('/api/check-payments/:user', async (req, res) => {
 app.get('/api/health', (req, res) => {
   res.json({
     mongo: !!db,
+    mongoError: mongoError,
     mongodbUriSet: !!MONGODB_URI,
     users: users.size,
     orders: orders.size,
@@ -425,6 +427,7 @@ async function connectDB() {
     console.log('Loaded: ' + users.size + ' users, ' + orders.size + ' orders, ' + payments.length + ' payments');
   } catch (e) {
     console.error('MongoDB connection error:', e.message);
+    mongoError = e.message;
   }
 }
 
