@@ -358,6 +358,19 @@ app.get('/api/purchases/:user', (req, res) => {
   res.json({ purchases: u.purchases });
 });
 
+// --- Admin: reset all balances to 0 ---
+app.post('/api/admin/reset-balances', (req, res) => {
+  const key = req.headers['x-admin-key'] || req.body.adminKey;
+  if (key !== ADMIN_KEY) return res.status(403).json({ error: 'Acceso denegado' });
+  let count = 0;
+  for (const [username, u] of users) {
+    u.balance = 0;
+    users.set(username, u);
+    count++;
+  }
+  res.json({ success: true, message: 'Saldos reseteados a 0', affected: count });
+});
+
 app.listen(PORT, () => {
   console.log('Backend running on port ' + PORT);
 });
