@@ -22,7 +22,7 @@ const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.co
 const ADMIN_KEY = process.env.ADMIN_KEY || 'rm4admin2026';
 const MONGODB_URI = process.env.MONGODB_URI || '';
 const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
-const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'no-reply@rm4market.com';
+const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'ntmb972@gmail.com';
 const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || 'RM4market';
 const REQUIRE_EMAIL_VERIFICATION = process.env.REQUIRE_EMAIL_VERIFICATION === 'true';
 
