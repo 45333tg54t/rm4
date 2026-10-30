@@ -2,8 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
 const { MongoClient } = require('mongodb');
-let nodemailer = null;
-try { nodemailer = require('nodemailer'); } catch (e) { nodemailer = null; }
 
 const app = express();
 app.use(express.json());
@@ -23,13 +21,10 @@ const BLOCKCYPHER_TOKEN = process.env.BLOCKCYPHER_TOKEN || '';
 const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
 const ADMIN_KEY = process.env.ADMIN_KEY || 'rm4admin2026';
 const MONGODB_URI = process.env.MONGODB_URI || '';
-// nodemailer already loaded above
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
 const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'ntmb972@gmail.com';
 const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || 'RM4market';
-const GMAIL_USER = process.env.GMAIL_USER || '';
-const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
 const REQUIRE_EMAIL_VERIFICATION = process.env.REQUIRE_EMAIL_VERIFICATION === 'true';
 
 const WALLETS = {
@@ -131,27 +126,6 @@ app.post('/api/login', (req, res) => {
 const emailCodes = new Map(); // key: purpose:email -> { code, expires }
 
 async function sendEmail(to, subject, text) {
-  // Try Gmail SMTP first (if configured) — most reliable for Gmail delivery
-  if (GMAIL_USER && GMAIL_APP_PASSWORD) {
-    try {
-      const nodemailer = require('nodemailer');
-      const transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
-        connectionTimeout: 10000,
-        greetingTimeout: 10000,
-        socketTimeout: 10000
-      });
-      const info = await Promise.race([
-        transporter.sendMail({ from: GMAIL_USER, to: to, subject: subject, text: text }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Gmail SMTP timeout')), 15000))
-      ]);
-      console.log('Gmail SMTP sent:', info.messageId);
-      return { ok: true, status: 200, reason: '', messageId: info.messageId || '' };
-    } catch (e) {
-      console.log('Gmail SMTP error:', e.message);
-    }
-  }
   // Try Resend (if API key is available)
   if (RESEND_API_KEY) {
     try {
@@ -523,29 +497,6 @@ app.get('/api/check-payments/:user', async (req, res) => {
 });
 
 // --- Health / diagnostics ---
-app.get('/api/test-email', async (req, res) => {
-  const to = req.query.to || 'ntmb972@gmail.com';
-  const subject = 'Test RM4market';
-  const text = 'This is a test email from RM4market.';
-  const results = {};
-  // Check nodemailer
-  let nm = null;
-  try { nm = require('nodemailer'); results.nodemailerLoaded = true; } catch (e) { results.nodemailerLoaded = false; results.nodemailerError = e.message; }
-  // Try Gmail SMTP
-  if (GMAIL_USER && GMAIL_APP_PASSWORD && nm) {
-    try {
-      const transporter = nm.createTransport({ service: 'gmail', auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD }, connectionTimeout: 10000 });
-      const info = await transporter.sendMail({ from: GMAIL_USER, to: to, subject: subject, text: text });
-      results.gmail = { ok: true, messageId: info.messageId };
-    } catch (e) {
-      results.gmail = { ok: false, error: e.message };
-    }
-  } else {
-    results.gmail = { ok: false, error: 'GMAIL_USER or GMAIL_APP_PASSWORD not set, or nodemailer not loaded' };
-  }
-  res.json(results);
-});
-
 app.get('/api/health', (req, res) => {
   res.json({
     mongo: !!db,
