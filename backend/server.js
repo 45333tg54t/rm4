@@ -21,6 +21,7 @@ const BLOCKCYPHER_TOKEN = process.env.BLOCKCYPHER_TOKEN || '';
 const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
 const ADMIN_KEY = process.env.ADMIN_KEY || 'rm4admin2026';
 const MONGODB_URI = process.env.MONGODB_URI || '';
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
 const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'ntmb972@gmail.com';
 const BREVO_SENDER_NAME = process.env.BREVO_SENDER_NAME || 'RM4market';
@@ -124,7 +125,7 @@ app.post('/api/login', (req, res) => {
 // --- Email codes (Brevo) for verification & password reset ---
 const emailCodes = new Map(); // key: purpose:email -> { code, expires }
 
-async function sendBrevoEmail(to, subject, text) {
+async function sendEmail(to, subject, text) {
   if (!BREVO_API_KEY) return { ok: false, status: 0, reason: 'Falta BREVO_API_KEY' };
   try {
     const r = await fetch('https://api.brevo.com/v3/smtp/email', {
@@ -159,7 +160,7 @@ app.post('/api/request-code', async (req, res) => {
   const text = p === 'reset'
     ? 'Hola,\n\nTu codigo para restablecer tu contrasena es: ' + code + '\n\nValido por 10 minutos. Si no solicitaste esto, ignora este correo.'
     : 'Hola,\n\nTu codigo de verificacion de correo es: ' + code + '\n\nValido por 10 minutos. Confirma que este correo es tuyo.';
-  const r = await sendBrevoEmail(email, subject, text);
+  const r = await sendEmail(email, subject, text);
   if (!r.ok) return res.status(500).json({ error: 'No se pudo enviar el correo. Intenta de nuevo.', detail: r.reason, status: r.status });
   res.json({ success: true, message: 'Código enviado a ' + email, messageId: r.messageId });
 });
