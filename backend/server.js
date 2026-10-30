@@ -79,8 +79,8 @@ function adminMiddleware(req, res, next) {
 app.post('/api/register', (req, res) => {
   const { username, email, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Username y password requeridos' });
-  if (username.length < 3) return res.status(400).json({ error: 'Username mínimo 3 caracteres' });
-  if (password.length < 4) return res.status(400).json({ error: 'Password mínimo 4 caracteres' });
+  if (username.length < 5) return res.status(400).json({ error: 'Username mínimo 5 caracteres' });
+  if (password.length < 5) return res.status(400).json({ error: 'Password mínimo 5 caracteres' });
   if (users.has(username)) return res.status(400).json({ error: 'El usuario ya existe' });
   const { hash, salt } = hashPassword(password);
   users.set(username, {
