@@ -155,10 +155,10 @@ app.post('/api/request-code', async (req, res) => {
   const p = purpose === 'reset' ? 'reset' : 'register';
   const code = genCode();
   emailCodes.set(p + ':' + String(email).toLowerCase(), { code, expires: Date.now() + 10 * 60 * 1000 });
-  const subject = p === 'reset' ? 'RM4market — Código para restablecer tu contraseña' : 'RM4market — Código de verificación';
+  const subject = p === 'reset' ? 'RM4market - Codigo para restablecer tu contrasena' : 'RM4market - Codigo de verificacion';
   const text = p === 'reset'
-    ? 'Hola,\n\nTu código para restablecer tu contraseña es: ' + code + '\n\nVálido por 10 minutos. Si no solicitaste esto, ignora este correo.'
-    : 'Hola,\n\nTu código de verificación de correo es: ' + code + '\n\nVálido por 10 minutos. Confirma que este correo es tuyo.';
+    ? 'Hola,\n\nTu codigo para restablecer tu contrasena es: ' + code + '\n\nValido por 10 minutos. Si no solicitaste esto, ignora este correo.'
+    : 'Hola,\n\nTu codigo de verificacion de correo es: ' + code + '\n\nValido por 10 minutos. Confirma que este correo es tuyo.';
   const r = await sendBrevoEmail(email, subject, text);
   if (!r.ok) return res.status(500).json({ error: 'No se pudo enviar el correo. Intenta de nuevo.', detail: r.reason, status: r.status });
   res.json({ success: true, message: 'Código enviado a ' + email, messageId: r.messageId });
