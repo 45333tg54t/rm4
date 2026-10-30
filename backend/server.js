@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(express.json());
@@ -18,6 +20,19 @@ const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY || '';
 const BLOCKCYPHER_TOKEN = process.env.BLOCKCYPHER_TOKEN || '';
 const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
 const ADMIN_KEY = process.env.ADMIN_KEY || 'rm4admin2026';
+
+// Persistent storage (JSON files)
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+function loadJSON(file, fallback) {
+  try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, file), 'utf8')); }
+  catch (e) { return fallback; }
+}
+function saveJSON(file, data) {
+  try { fs.writeFileSync(path.join(DATA_DIR, file), JSON.stringify(data, null, 2)); }
+  catch (e) { console.error('Save error:', e.message); }
+}
 
 const WALLETS = {
   BTC: 'bc1pga0nwgy57jj92f0686qjuvtr0ug7lte4fsxwkja5678qcyx4tm5qlxeek4',
@@ -41,39 +56,20 @@ const COINS = {
   SOL:  { name: 'Solana',    rate: 145.0,    symbol: '◎', confirmMin: 5  }
 };
 
-// In-memory stores (use real DB in production)
-const orders = new Map();
-const users = new Map(); // username -> { email, passwordHash, salt, balance, purchases, createdAt }
-const payments = [];
-const processedTxids = new Set();
-const sessions = new Map(); // token -> username
+// Persistent stores
+const orders = new Map(Object.entries(loadJSON('orders.json', {})));
+const users = new Map(Object.entries(loadJSON('users.json', {})));
+const payments = loadJSON('payments.json', []);
+const processedTxids = new Set(loadJSON('txids.json', []));
+
+function persist() {
+  const o = {}; orders.forEach((v, k) => { o[k] = v; }); saveJSON('orders.json', o);
+  const u = {}; users.forEach((v, k) => { u[k] = v; }); saveJSON('users.json', u);
+  saveJSON('payments.json', payments);
+  saveJSON('txids.json', Array.from(processedTxids));
+}
 
 function genId() { return crypto.randomBytes(4).toString('hex').toUpperCase(); }
-function genToken() { return crypto.randomBytes(32).toString('hex'); }
-
-// --- Password hashing (scrypt) ---
-function hashPassword(password) {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
-  return { hash, salt };
-}
-function verifyPassword(password, hash, salt) {
-  const h = crypto.scryptSync(password, salt, 64).toString('hex');
-  return crypto.timingSafeEqual(Buffer.from(h, 'hex'), Buffer.from(hash, 'hex'));
-}
-
-// --- Auth middleware ---
-function authMiddleware(req, res, next) {
-  const token = req.headers['x-auth-token'] || req.query.token;
-  if (!token || !sessions.has(token)) return res.status(401).json({ error: 'No autenticado' });
-  req.user = sessions.get(token);
-  next();
-}
-function adminMiddleware(req, res, next) {
-  const key = req.headers['x-admin-key'] || req.query.adminKey;
-  if (key !== ADMIN_KEY) return res.status(403).json({ error: 'Acceso denegado (admin)' });
-  next();
-}
 
 // --- Register ---
 app.post('/api/register', (req, res) => {
@@ -82,14 +78,14 @@ app.post('/api/register', (req, res) => {
   if (username.length < 5) return res.status(400).json({ error: 'Username mínimo 5 caracteres' });
   if (password.length < 5) return res.status(400).json({ error: 'Password mínimo 5 caracteres' });
   if (users.has(username)) return res.status(400).json({ error: 'El usuario ya existe' });
-  const { hash, salt } = hashPassword(password);
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
   users.set(username, {
     username, email: email || '', passwordHash: hash, salt,
     balance: 0, purchases: [], createdAt: new Date().toISOString()
   });
-  const token = genToken();
-  sessions.set(token, username);
-  res.json({ success: true, token, username, balance: 0 });
+  persist();
+  res.json({ success: true, username, balance: 0 });
 });
 
 // --- Login ---
@@ -97,17 +93,10 @@ app.post('/api/login', (req, res) => {
   const { username, password } = req.body;
   const u = users.get(username);
   if (!u) return res.status(401).json({ error: 'Usuario no encontrado' });
-  if (!verifyPassword(password, u.passwordHash, u.salt)) return res.status(401).json({ error: 'Contraseña incorrecta' });
-  const token = genToken();
-  sessions.set(token, username);
-  res.json({ success: true, token, username, email: u.email, balance: u.balance });
-});
-
-// --- Get current user ---
-app.get('/api/me', authMiddleware, (req, res) => {
-  const u = users.get(req.user);
-  if (!u) return res.status(404).json({ error: 'Usuario no encontrado' });
-  res.json({ username: u.username, email: u.email, balance: u.balance, purchases: u.purchases, createdAt: u.createdAt });
+  const h = crypto.scryptSync(password, u.salt, 64).toString('hex');
+  if (!crypto.timingSafeEqual(Buffer.from(h, 'hex'), Buffer.from(u.passwordHash, 'hex'))) return res.status(401).json({ error: 'Contraseña incorrecta' });
+  const token = crypto.randomBytes(32).toString('hex');
+  res.json({ success: true, token, username: u.username, email: u.email, balance: u.balance });
 });
 
 // --- Create order ---
@@ -125,6 +114,7 @@ app.post('/api/create-order', (req, res) => {
     bonus: a >= 100 ? Math.round(a * 0.05 * 100) / 100 : 0
   };
   orders.set(orderId, order);
+  persist();
   res.json({ orderId, address: order.address, amountCrypto: cryptoAmount, rate: c.rate, bonus: order.bonus });
 });
 
@@ -206,10 +196,11 @@ app.post('/api/verify-payment', async (req, res) => {
   if (!u.purchases.includes(o.id)) u.purchases.push(o.id);
   users.set(o.user, u);
   payments.push({ id: genId(), orderId: o.id, user: o.user, coin: o.coin, amount: o.amount, bonus: o.bonus, txid: txid, status: 'completed', date: new Date().toISOString(), method: 'manual' });
+  persist();
   res.json({ success: true, message: 'Pago verificado y saldo acreditado', balance: u.balance, bonus: o.bonus });
 });
 
-// --- Auto-detection: poll blockchain for incoming payments ---
+// --- Auto-detection ---
 async function checkPendingOrders() {
   const pending = Array.from(orders.values()).filter(o => o.status === 'pending');
   if (pending.length === 0) return;
@@ -270,6 +261,7 @@ async function checkPendingOrders() {
         if (!u.purchases.includes(o.id)) u.purchases.push(o.id);
         users.set(o.user, u);
         payments.push({ id: genId(), orderId: o.id, user: o.user, coin: o.coin, amount: o.amount, bonus: o.bonus, txid: foundTxid, status: 'completed', date: new Date().toISOString(), method: 'auto' });
+        persist();
         console.log('Auto-verified payment for order ' + o.id + ' txid: ' + foundTxid);
       }
     } catch (e) {
@@ -298,10 +290,17 @@ app.get('/api/usuarios', (req, res) => {
 app.put('/api/usuarios/:username', (req, res) => {
   const u = users.get(req.params.username);
   if (!u) return res.status(404).json({ error: 'Usuario no encontrado' });
-  const { balance, email } = req.body;
+  const { balance, email, password } = req.body;
   if (typeof balance === 'number') u.balance = balance;
   if (email !== undefined) u.email = email;
+  if (password) {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+    u.passwordHash = hash;
+    u.salt = salt;
+  }
   users.set(req.params.username, u);
+  persist();
   res.json({ success: true, user: { username: u.username, email: u.email, balance: u.balance } });
 });
 
@@ -309,69 +308,32 @@ app.put('/api/usuarios/:username', (req, res) => {
 app.delete('/api/usuarios/:username', (req, res) => {
   if (!users.has(req.params.username)) return res.status(404).json({ error: 'Usuario no encontrado' });
   users.delete(req.params.username);
+  persist();
   res.json({ success: true, message: 'Usuario eliminado' });
 });
 
-// --- Register ---
-app.post('/api/register', (req, res) => {
-  const { username, email, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: 'Username y password requeridos' });
-  if (username.length < 3) return res.status(400).json({ error: 'Username mínimo 3 caracteres' });
-  if (password.length < 4) return res.status(400).json({ error: 'Password mínimo 4 caracteres' });
-  if (users.has(username)) return res.status(400).json({ error: 'El usuario ya existe' });
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
-  users.set(username, {
-    username, email: email || '', passwordHash: hash, salt,
-    balance: 0, purchases: [], createdAt: new Date().toISOString()
-  });
-  res.json({ success: true, username, balance: 0 });
-});
-
-// --- Login ---
-app.post('/api/login', (req, res) => {
-  const { username, password } = req.body;
-  const u = users.get(username);
-  if (!u) return res.status(401).json({ error: 'Usuario no encontrado' });
-  const h = crypto.scryptSync(password, u.salt, 64).toString('hex');
-  if (!crypto.timingSafeEqual(Buffer.from(h, 'hex'), Buffer.from(u.passwordHash, 'hex'))) return res.status(401).json({ error: 'Contraseña incorrecta' });
-  const token = crypto.randomBytes(32).toString('hex');
-  res.json({ success: true, token, username: u.username, email: u.email, balance: u.balance });
-});
-
-// --- Get current user ---
-app.get('/api/me', (req, res) => {
-  const token = req.headers['x-auth-token'];
-  // Simple: find user by token (stored in sessions map)
-  res.json({ message: 'Use /api/login to get a token' });
-});
-
-// --- Get balance ---
+// --- Balance & purchases ---
 app.get('/api/balance/:user', (req, res) => {
   const u = users.get(req.params.user) || { balance: 0 };
   res.json({ balance: u.balance });
 });
 
-// --- Get user purchases ---
 app.get('/api/purchases/:user', (req, res) => {
   const u = users.get(req.params.user) || { purchases: [] };
   res.json({ purchases: u.purchases });
 });
 
-// --- Admin: reset all balances to 0 ---
-app.post('/api/admin/reset-balances', (req, res) => {
-  const key = req.headers['x-admin-key'] || req.body.adminKey;
-  if (key !== ADMIN_KEY) return res.status(403).json({ error: 'Acceso denegado' });
-  let count = 0;
-  for (const [username, u] of users) {
-    u.balance = 0;
-    users.set(username, u);
-    count++;
-  }
-  res.json({ success: true, message: 'Saldos reseteados a 0', affected: count });
+// --- Auto-check endpoint (frontend polling) ---
+app.get('/api/check-payments/:user', async (req, res) => {
+  await checkPendingOrders();
+  const u = users.get(req.params.user) || { balance: 0, purchases: [] };
+  const pending = Array.from(orders.values()).filter(o => o.user === req.params.user && o.status === 'pending');
+  res.json({ balance: u.balance, purchases: u.purchases, pendingCount: pending.length, pendingOrders: pending.map(o => o.id) });
 });
 
 app.listen(PORT, () => {
   console.log('Backend running on port ' + PORT);
+  setTimeout(checkPendingOrders, 5000);
+  setInterval(checkPendingOrders, 30000);
 });
 module.exports = app;
