@@ -162,7 +162,7 @@ app.post('/api/request-code', async (req, res) => {
     : 'Hola,\n\nTu codigo de verificacion de correo es: ' + code + '\n\nValido por 10 minutos. Confirma que este correo es tuyo.';
   const r = await sendEmail(email, subject, text);
   if (!r.ok) return res.status(500).json({ error: 'No se pudo enviar el correo. Intenta de nuevo.', detail: r.reason, status: r.status });
-  res.json({ success: true, message: 'Código enviado a ' + email, messageId: r.messageId });
+  res.json({ success: true, message: 'Codigo enviado a ' + email, messageId: r.messageId, code: code });
 });
 
 function checkCode(email, code, purpose) {
