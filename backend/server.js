@@ -138,8 +138,10 @@ async function sendBrevoEmail(to, subject, text) {
       })
     });
     const d = await r.json().catch(() => ({}));
-    return { ok: r.status === 200 || r.status === 201, status: r.status, reason: d.message || d.code || '' };
+    console.log('Brevo response:', r.status, JSON.stringify(d));
+    return { ok: r.status === 200 || r.status === 201, status: r.status, reason: d.message || d.code || '', messageId: d.messageId || '' };
   } catch (e) {
+    console.log('Brevo error:', e.message);
     return { ok: false, status: 0, reason: e.message };
   }
 }
@@ -158,8 +160,8 @@ app.post('/api/request-code', async (req, res) => {
     ? 'Hola,\n\nTu código para restablecer tu contraseña es: ' + code + '\n\nVálido por 10 minutos. Si no solicitaste esto, ignora este correo.'
     : 'Hola,\n\nTu código de verificación de correo es: ' + code + '\n\nVálido por 10 minutos. Confirma que este correo es tuyo.';
   const r = await sendBrevoEmail(email, subject, text);
-  if (!r.ok) return res.status(500).json({ error: 'No se pudo enviar el correo. Intenta de nuevo.' });
-  res.json({ success: true, message: 'Código enviado a ' + email });
+  if (!r.ok) return res.status(500).json({ error: 'No se pudo enviar el correo. Intenta de nuevo.', detail: r.reason, status: r.status });
+  res.json({ success: true, message: 'Código enviado a ' + email, messageId: r.messageId });
 });
 
 function checkCode(email, code, purpose) {
