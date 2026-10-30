@@ -1,8 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
+const { MongoClient } = require('mongodb');
 
 const app = express();
 app.use(express.json());
@@ -20,19 +19,7 @@ const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY || '';
 const BLOCKCYPHER_TOKEN = process.env.BLOCKCYPHER_TOKEN || '';
 const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
 const ADMIN_KEY = process.env.ADMIN_KEY || 'rm4admin2026';
-
-// Persistent storage (JSON files)
-const DATA_DIR = path.join(__dirname, 'data');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
-function loadJSON(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, file), 'utf8')); }
-  catch (e) { return fallback; }
-}
-function saveJSON(file, data) {
-  try { fs.writeFileSync(path.join(DATA_DIR, file), JSON.stringify(data, null, 2)); }
-  catch (e) { console.error('Save error:', e.message); }
-}
+const MONGODB_URI = process.env.MONGODB_URI || '';
 
 const WALLETS = {
   BTC: 'bc1pga0nwgy57jj92f0686qjuvtr0ug7lte4fsxwkja5678qcyx4tm5qlxeek4',
@@ -56,23 +43,49 @@ const COINS = {
   SOL:  { name: 'Solana',    rate: 145.0,    symbol: '◎', confirmMin: 5  }
 };
 
-// Persistent stores
-const orders = new Map(Object.entries(loadJSON('orders.json', {})));
-const users = new Map(Object.entries(loadJSON('users.json', {})));
-const payments = loadJSON('payments.json', []);
-const processedTxids = new Set(loadJSON('txids.json', []));
+let db = null;
+const orders = new Map();
+const users = new Map();
+const payments = [];
+const processedTxids = new Set();
 
-function persist() {
-  const o = {}; orders.forEach((v, k) => { o[k] = v; }); saveJSON('orders.json', o);
-  const u = {}; users.forEach((v, k) => { u[k] = v; }); saveJSON('users.json', u);
-  saveJSON('payments.json', payments);
-  saveJSON('txids.json', Array.from(processedTxids));
+// Load data from MongoDB
+async function loadFromDB() {
+  if (!db) return;
+  try {
+    const usersCol = db.collection('users');
+    const ordersCol = db.collection('orders');
+    const paymentsCol = db.collection('payments');
+    const txidsCol = db.collection('txids');
+
+    const usersArr = await usersCol.find({}).toArray();
+    usersArr.forEach(u => users.set(u.username, u));
+
+    const ordersArr = await ordersCol.find({}).toArray();
+    ordersArr.forEach(o => orders.set(o.id, o));
+
+    const paymentsArr = await paymentsCol.find({}).toArray();
+    paymentsArr.forEach(p => payments.push(p));
+
+    const txidsArr = await txidsCol.find({}).toArray();
+    txidsArr.forEach(t => processedTxids.add(t.txid));
+
+    console.log('Loaded from DB: ' + users.size + ' users, ' + orders.size + ' orders, ' + payments.length + ' payments');
+  } catch (e) {
+    console.error('DB load error:', e.message);
+  }
 }
+
+// Save helpers
+async function saveUser(u) { if (db) await db.collection('users').updateOne({ username: u.username }, { $set: u }, { upsert: true }); }
+async function saveOrder(o) { if (db) await db.collection('orders').updateOne({ id: o.id }, { $set: o }, { upsert: true }); }
+async function savePayment(p) { if (db) await db.collection('payments').insertOne(p); }
+async function saveTxid(t) { if (db) await db.collection('txids').updateOne({ txid: t }, { $set: { txid: t } }, { upsert: true }); }
 
 function genId() { return crypto.randomBytes(4).toString('hex').toUpperCase(); }
 
 // --- Register ---
-app.post('/api/register', (req, res) => {
+app.post('/api/register', async (req, res) => {
   const { username, email, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Username y password requeridos' });
   if (username.length < 5) return res.status(400).json({ error: 'Username mínimo 5 caracteres' });
@@ -80,11 +93,9 @@ app.post('/api/register', (req, res) => {
   if (users.has(username)) return res.status(400).json({ error: 'El usuario ya existe' });
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
-  users.set(username, {
-    username, email: email || '', passwordHash: hash, salt,
-    balance: 0, purchases: [], createdAt: new Date().toISOString()
-  });
-  persist();
+  const u = { username, email: email || '', passwordHash: hash, salt, balance: 0, purchases: [], createdAt: new Date().toISOString() };
+  users.set(username, u);
+  await saveUser(u);
   res.json({ success: true, username, balance: 0 });
 });
 
@@ -114,7 +125,7 @@ app.post('/api/create-order', (req, res) => {
     bonus: a >= 100 ? Math.round(a * 0.05 * 100) / 100 : 0
   };
   orders.set(orderId, order);
-  persist();
+  saveOrder(order);
   res.json({ orderId, address: order.address, amountCrypto: cryptoAmount, rate: c.rate, bonus: order.bonus });
 });
 
@@ -196,7 +207,10 @@ app.post('/api/verify-payment', async (req, res) => {
   if (!u.purchases.includes(o.id)) u.purchases.push(o.id);
   users.set(o.user, u);
   payments.push({ id: genId(), orderId: o.id, user: o.user, coin: o.coin, amount: o.amount, bonus: o.bonus, txid: txid, status: 'completed', date: new Date().toISOString(), method: 'manual' });
-  persist();
+  await saveUser(u);
+  await saveOrder(o);
+  await savePayment(payments[payments.length - 1]);
+  await saveTxid(txid);
   res.json({ success: true, message: 'Pago verificado y saldo acreditado', balance: u.balance, bonus: o.bonus });
 });
 
@@ -261,7 +275,10 @@ async function checkPendingOrders() {
         if (!u.purchases.includes(o.id)) u.purchases.push(o.id);
         users.set(o.user, u);
         payments.push({ id: genId(), orderId: o.id, user: o.user, coin: o.coin, amount: o.amount, bonus: o.bonus, txid: foundTxid, status: 'completed', date: new Date().toISOString(), method: 'auto' });
-        persist();
+        await saveUser(u);
+        await saveOrder(o);
+        await savePayment(payments[payments.length - 1]);
+        await saveTxid(foundTxid);
         console.log('Auto-verified payment for order ' + o.id + ' txid: ' + foundTxid);
       }
     } catch (e) {
@@ -300,7 +317,7 @@ app.put('/api/usuarios/:username', (req, res) => {
     u.salt = salt;
   }
   users.set(req.params.username, u);
-  persist();
+  saveUser(u);
   res.json({ success: true, user: { username: u.username, email: u.email, balance: u.balance } });
 });
 
@@ -308,16 +325,57 @@ app.put('/api/usuarios/:username', (req, res) => {
 app.delete('/api/usuarios/:username', (req, res) => {
   if (!users.has(req.params.username)) return res.status(404).json({ error: 'Usuario no encontrado' });
   users.delete(req.params.username);
-  persist();
+  if (db) db.collection('users').deleteOne({ username: req.params.username });
   res.json({ success: true, message: 'Usuario eliminado' });
 });
 
-// --- Balance & purchases ---
+// --- Admin: reset all balances ---
+app.post('/api/admin/reset-balances', (req, res) => {
+  const key = req.headers['x-admin-key'] || req.body.adminKey;
+  if (key !== ADMIN_KEY) return res.status(403).json({ error: 'Acceso denegado' });
+  let count = 0;
+  for (const [username, u] of users) {
+    u.balance = 0;
+    users.set(username, u);
+    saveUser(u);
+    count++;
+  }
+  res.json({ success: true, message: 'Saldos reseteados a 0', affected: count });
+});
+
+// --- Register ---
+app.post('/api/register', (req, res) => {
+  const { username, email, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: 'Username y password requeridos' });
+  if (username.length < 5) return res.status(400).json({ error: 'Username mínimo 5 caracteres' });
+  if (password.length < 5) return res.status(400).json({ error: 'Password mínimo 5 caracteres' });
+  if (users.has(username)) return res.status(400).json({ error: 'El usuario ya existe' });
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  const u = { username, email: email || '', passwordHash: hash, salt, balance: 0, purchases: [], createdAt: new Date().toISOString() };
+  users.set(username, u);
+  saveUser(u);
+  res.json({ success: true, username, balance: 0 });
+});
+
+// --- Login ---
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body;
+  const u = users.get(username);
+  if (!u) return res.status(401).json({ error: 'Usuario no encontrado' });
+  const h = crypto.scryptSync(password, u.salt, 64).toString('hex');
+  if (!crypto.timingSafeEqual(Buffer.from(h, 'hex'), Buffer.from(u.passwordHash, 'hex'))) return res.status(401).json({ error: 'Contraseña incorrecta' });
+  const token = crypto.randomBytes(32).toString('hex');
+  res.json({ success: true, token, username: u.username, email: u.email, balance: u.balance });
+});
+
+// --- Get balance ---
 app.get('/api/balance/:user', (req, res) => {
   const u = users.get(req.params.user) || { balance: 0 };
   res.json({ balance: u.balance });
 });
 
+// --- Get user purchases ---
 app.get('/api/purchases/:user', (req, res) => {
   const u = users.get(req.params.user) || { purchases: [] };
   res.json({ purchases: u.purchases });
@@ -331,9 +389,43 @@ app.get('/api/check-payments/:user', async (req, res) => {
   res.json({ balance: u.balance, purchases: u.purchases, pendingCount: pending.length, pendingOrders: pending.map(o => o.id) });
 });
 
-app.listen(PORT, () => {
-  console.log('Backend running on port ' + PORT);
-  setTimeout(checkPendingOrders, 5000);
-  setInterval(checkPendingOrders, 30000);
+// --- Connect to MongoDB (optional) ---
+async function connectDB() {
+  if (!MONGODB_URI) {
+    console.log('No MONGODB_URI set, using in-memory storage');
+    return;
+  }
+  try {
+    const client = new MongoClient(MONGODB_URI);
+    await client.connect();
+    db = client.db('rm4market');
+    console.log('Connected to MongoDB');
+    // Load data from MongoDB
+    const usersArr = await db.collection('users').find({}).toArray();
+    usersArr.forEach(u => users.set(u.username, u));
+    const ordersArr = await db.collection('orders').find({}).toArray();
+    ordersArr.forEach(o => orders.set(o.id, o));
+    const paymentsArr = await db.collection('payments').find({}).toArray();
+    paymentsArr.forEach(p => payments.push(p));
+    const txidsArr = await db.collection('txids').find({}).toArray();
+    txidsArr.forEach(t => processedTxids.add(t.txid));
+    console.log('Loaded: ' + users.size + ' users, ' + orders.size + ' orders, ' + payments.length + ' payments');
+  } catch (e) {
+    console.error('MongoDB connection error:', e.message);
+  }
+}
+
+// Save helpers (MongoDB)
+async function saveUser(u) { if (db) await db.collection('users').updateOne({ username: u.username }, { $set: u }, { upsert: true }); }
+async function saveOrder(o) { if (db) await db.collection('orders').updateOne({ id: o.id }, { $set: o }, { upsert: true }); }
+async function savePayment(p) { if (db) await db.collection('payments').insertOne(p); }
+async function saveTxid(t) { if (db) await db.collection('txids').updateOne({ txid: t }, { $set: { txid: t } }, { upsert: true }); }
+
+connectDB().then(() => {
+  app.listen(PORT, () => {
+    console.log('Backend running on port ' + PORT);
+    setTimeout(checkPendingOrders, 5000);
+    setInterval(checkPendingOrders, 30000);
+  });
 });
 module.exports = app;
